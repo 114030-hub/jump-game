@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>郭熙《早春圖》冒險遊戲</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <style>
+        body { margin: 0; background: #e8dfc4; overflow: hidden; font-family: "楷體", "STKaiti", serif; }
+        #game-container { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; background: linear-gradient(to bottom, #f4ecd8 0%, #dcd2b6 100%); }
+        #ui-overlay {
+            position: absolute; top: 20px; left: 20px; 
+            background: rgba(255, 255, 255, 0.7); padding: 15px;
+            border: 2px solid #5d4a37; border-radius: 5px;
+        }
+        .status { font-size: 18px; color: #333; margin-bottom: 5px; }
+        .hint { font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+
+<div id="ui-overlay">
+    <div class="status">畫境生機：<span id="score">0</span>%</div>
+    <div class="status" id="goal-text">目標：攀登至頂峰殿堂</div>
+    <div class="hint">按 <b>← →</b> 移動，<b>空白鍵</b> 跳躍</div>
+    <div class="hint">避開「蟹爪枝」，尋找「捲雲皴」路徑</div>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<script src="sw.js"></script>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// 遊戲參數
+const gravity = 0.6;
+const friction = 0.8;
+let score = 0;
+
+// 玩家：瑪利歐 (在水墨畫中呈現為一抹硃砂紅)
+const player = {
+    x: 100, y: canvas.height - 100,
+    width: 30, height: 30,
+    vx: 0, vy: 0,
+    jumping: false,
+    color: "#a62c2b" // 硃砂紅
+};
+
+// 平台：捲雲皴
+const platforms = [
+    { x: 0, y: canvas.height - 40, w: canvas.width, h: 40, name: "地基" },
+    { x: 200, y: canvas.height - 150, w: 150, h: 20 },
+    { x: 450, y: canvas.height - 280, w: 200, h: 20 },
+    { x: 250, y: canvas.height - 420, w: 150, h: 20 },
+    { x: 500, y: canvas.height - 550, w: 100, h: 20 },
+    { x: 800, y: canvas.height - 350, w: 200, h: 20 },
+    { x: 1000, y: canvas.height - 500, w: 200, h: 20 },
+    // 頂峰殿堂
+    { x: canvas.width - 250, y: 150, w: 200, h: 30, goal: true }
+];
+
+// 障礙：蟹爪枝
+const hazards = [
+    { x: 400, y: canvas.height - 100, size: 50 },
+    { x: 750, y: canvas.height - 100, size: 70 },
+    { x: 600, y: canvas.height - 400, size: 40 }
+];
+
+// 生機點 (收集品)
+let vitalityPoints = [
+    { x: 270, y: canvas.height - 180, collected: false },
+    { x: 550, y: canvas.height - 310, collected: false },
+    { x: 300, y: canvas.height - 450, collected: false },
+    { x: 900, y: canvas.height - 380, collected: false }
+];
+
+const keys = {};
+
+window.addEventListener('keydown', e => keys[e.code] = true);
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+function drawPlayer() {
+    ctx.fillStyle = player.color;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "rgba(166, 44, 43, 0.5)";
+    ctx.fillRect(player.x, player.y, player.width, player.height);
+    ctx.shadowBlur = 0;
+}
+
+function drawPlatforms() {
+    platforms.forEach(p => {
+        // 使用捲雲皴風格繪製平台
+        ctx.fillStyle = p.goal ? "#5d4a37" : "#2c2c2c";
+        ctx.beginPath();
+        ctx.ellipse(p.x + p.w/2, p.y + p.h/2, p.w/2, p.h, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        if(p.goal) {
+            ctx.fillStyle = "#000";
+            ctx.fillText("頂峰：宏偉殿堂", p.x + 40, p.y - 10);
+        }
+    });
+}
+
+function drawHazards() {
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = 3;
+    hazards.forEach(h => {
+        // 繪製「蟹爪枝」
+        ctx.beginPath();
+        ctx.moveTo(h.x, canvas.height - 40);
+        ctx.lineTo(h.x, canvas.height - 40 - h.size);
+        ctx.lineTo(h.x - 20, canvas.height - 40 - h.size - 20);
+        ctx.moveTo(h.x, canvas.height - 40 - h.size);
+        ctx.lineTo(h.x + 20, canvas.height - 40 - h.size - 25);
+        ctx.stroke();
+    });
+}
+
+function drawVitality() {
+    vitalityPoints.forEach(v => {
+        if (!v.collected) {
+            ctx.fillStyle = "#4a7c59"; // 瑞雪消融的綠意
+            ctx.beginPath();
+            ctx.arc(v.x, v.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+}
+
+function update() {
+    if (keys['ArrowLeft']) player.vx -= 0.8;
+    if (keys['ArrowRight']) player.vx += 0.8;
+    if (keys['Space'] && !player.jumping) {
+        player.vy = -15;
+        player.jumping = true;
+    }
+
+    player.vy += gravity;
+    player.x += player.vx;
+    player.y += player.vy;
+    player.vx *= friction;
+
+    // 地板邊界
+    if (player.y > canvas.height - player.height) {
+        player.y = canvas.height - player.height;
+        player.vy = 0;
+        player.jumping = false;
+    }
+
+    // 平台碰撞檢測
+    platforms.forEach(p => {
+        if (player.x < p.x + p.w && player.x + player.width > p.x &&
+            player.y + player.height > p.y && player.y + player.height < p.y + p.h + player.vy) {
+            
+            if (p.goal && score >= 100) {
+                alert("恭喜！您已到達頂峰殿堂，體驗了郭熙的『可居可遊』之境！");
+                resetGame();
+            } else if (p.goal) {
+                // 生機不足
+                document.getElementById('goal-text').innerText = "生機不足，無法進入殿堂！";
+                document.getElementById('goal-text').style.color = "red";
+            }
+            
+            player.y = p.y - player.height;
+            player.vy = 0;
+            player.jumping = false;
+        }
+    });
+
+    // 收集品檢測
+    vitalityPoints.forEach(v => {
+        if (!v.collected && Math.hypot(player.x - v.x, player.y - v.y) < 30) {
+            v.collected = true;
+            score += 25;
+            scoreEl.innerText = score;
+        }
+    });
+
+    // 障礙檢測
+    hazards.forEach(h => {
+        if (Math.hypot(player.x - h.x, player.y - (canvas.height - 80)) < 40) {
+            alert("觸碰到「蟹爪枝」，氣息受阻！請重新體悟。");
+            resetGame();
+        }
+    });
+}
+
+function resetGame() {
+    player.x = 100; player.y = canvas.height - 100;
+    score = 0
